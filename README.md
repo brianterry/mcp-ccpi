@@ -1,113 +1,160 @@
 # MCP Server for AWS CloudControl API
 
-This project implements a Model-Cloud-Provisioning (MCP) server that allows Large Language Models (LLMs) to create and manage AWS cloud resources using the AWS CloudControl API.
+A Model-Cloud-Provisioning (MCP) server that enables Large Language Models (LLMs) to create and manage AWS cloud resources using Python.
 
 ## Overview
 
-The MCP server provides a RESTful API that LLMs can use to:
+The MCP server provides a RESTful API that allows LLMs to:
 
-1. Request the creation of AWS resources
-2. Check the status of resource creation requests
-3. List existing resources
-4. Update resource properties
-5. Delete resources
+1. Create, read, update, and delete AWS resources using the AWS CloudControl API
+2. Process natural language requests to manage cloud resources
+3. Access resource schemas and templates
+4. Validate resource configurations against schemas
 
-The server acts as a middleware between LLMs and AWS CloudControl API, providing a simplified interface for cloud resource provisioning.
+## Features
 
-## Architecture
+- **RESTful API**: Provides endpoints for managing AWS resources
+- **Natural Language Interface**: Allows LLMs to use natural language to manage resources
+- **Schema Management**: Downloads, validates, and uses AWS CloudFormation resource schemas
+- **Resource Templates**: Generates templates for resource creation
+- **Resource Validation**: Validates resource configurations against schemas
 
-- **FastAPI Backend**: Provides RESTful endpoints for resource management
-- **AWS CloudControl API**: Used to provision and manage AWS resources
-- **Schema Manager**: Loads and manages CloudFormation resource provider schemas
-- **LLM Interface**: Processes natural language requests from LLMs
+## Project Structure
 
-## Key Features
+```
+.
+├── app/
+│   ├── __init__.py
+│   ├── main.py                # Main FastAPI application
+│   ├── llm_interface.py       # Natural language interface for LLMs
+│   └── schema_manager.py      # Schema management functionality
+├── examples/
+│   ├── create_s3_bucket.py    # Example script for creating an S3 bucket
+│   ├── llm_integration.py     # Example script for LLM integration
+│   ├── simple_workflow.py     # Example of a complete workflow
+│   └── natural_language_demo.py # Demo of natural language interface
+├── schemas/                   # Directory for storing resource schemas
+├── tests/
+│   ├── __init__.py
+│   ├── test_api.py            # Tests for API endpoints
+│   └── test_llm_interface.py  # Tests for LLM interface
+├── .env.example               # Example environment variables
+├── .gitignore                 # Git ignore file
+├── README.md                  # Project documentation
+├── requirements.txt           # Project dependencies
+├── run.py                     # Script to run the server
+└── run_tests.py               # Script to run tests
+```
 
-- **Schema-based Resource Creation**: Uses CloudFormation resource provider schemas to validate and create resources
-- **Natural Language Interface**: Allows LLMs to create resources using natural language
-- **Resource Templates**: Generates templates for resources based on their schemas
-- **Schema Management**: Downloads and manages CloudFormation resource provider schemas
+## Installation
 
-## Getting Started
-
-### Prerequisites
-
-- Python 3.8+
-- AWS account with appropriate permissions
-- AWS credentials configured
-
-### Installation
-
-1. Clone the repository
-2. Install dependencies:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/mcp-ccapi.git
+   cd mcp-ccapi
    ```
+
+2. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
+
 3. Configure AWS credentials:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your AWS credentials
    ```
-   export AWS_ACCESS_KEY_ID=your_access_key
-   export AWS_SECRET_ACCESS_KEY=your_secret_key
-   export AWS_REGION=your_region
-   ```
-   Or create a `.env` file with these variables.
+
+## Usage
 
 ### Running the Server
 
-```
-cd mcp-ccapi
+```bash
 python run.py
 ```
 
-The API will be available at http://localhost:8000
+The server will be available at http://localhost:8000. API documentation is available at http://localhost:8000/docs.
 
-## API Documentation
-
-Once the server is running, you can access the API documentation at http://localhost:8000/docs
-
-## Example Usage
-
-### Creating an S3 Bucket Using Schema-Based Approach
+### Running Tests
 
 ```bash
-# Download common schemas
-python examples/schema_based_resource.py --download-schemas --list-types
-
-# Create an S3 bucket
-python examples/schema_based_resource.py --type AWS::S3::Bucket --name my-example-bucket --execute
+python run_tests.py
 ```
 
-### Creating an S3 Bucket Using Natural Language
+## Simple Example Flow
 
-```python
-import requests
+Here's a simple example flow demonstrating how to use the MCP server:
 
-response = requests.post(
-    "http://localhost:8000/llm/resources",
-    json={
-        "text": "Create an S3 bucket with name 'my-example-bucket' and versioning enabled",
-        "execute": True
-    }
-)
-
-print(response.json())
-```
-
-## Schema Management
-
-The MCP server uses CloudFormation resource provider schemas to validate and create resources. These schemas are downloaded from AWS CloudFormation registry and stored locally in the `schemas` directory.
-
-You can download schemas for commonly used resource types:
+### 1. Start the Server
 
 ```bash
-curl -X POST "http://localhost:8000/schemas/download?common_only=true"
+python run.py
 ```
 
-Or download schemas for all available resource types:
+### 2. Run the Simple Workflow Example
+
+This example demonstrates a complete workflow including creating, reading, and deleting an S3 bucket:
 
 ```bash
-curl -X POST "http://localhost:8000/schemas/download?common_only=false"
+python examples/simple_workflow.py my-test-bucket
 ```
+
+The script will:
+1. Create an S3 bucket named "my-test-bucket"
+2. Check the status of the creation operation
+3. Get details of the created bucket
+4. List all S3 buckets
+5. Delete the bucket
+
+### 3. Use the Natural Language Interface
+
+You can also use natural language to manage resources:
+
+```bash
+# Preview mode (doesn't actually create the resource)
+python examples/natural_language_demo.py "Create an S3 bucket named my-nl-bucket with versioning enabled"
+
+# Execute mode (actually creates the resource)
+python examples/natural_language_demo.py "Create an S3 bucket named my-nl-bucket with versioning enabled" --execute
+
+# List all buckets
+python examples/natural_language_demo.py "List all S3 buckets" --execute
+
+# Delete the bucket
+python examples/natural_language_demo.py "Delete S3 bucket my-nl-bucket" --execute
+```
+
+## API Endpoints
+
+### Resources
+
+- `POST /resources`: Create a new resource
+- `GET /resources/{type_name}`: List resources of a specific type
+- `GET /resources/{type_name}/{identifier}`: Get details of a specific resource
+- `PATCH /resources`: Update an existing resource
+- `DELETE /resources`: Delete a resource
+- `GET /resources/status/{request_token}`: Get the status of a resource request
+
+### LLM Interface
+
+- `POST /llm/resources`: Process a natural language request from an LLM
+
+### Schemas
+
+- `GET /schemas/{type_name}`: Get the schema for a resource type
+- `GET /schemas`: List available resource types
+- `POST /schemas/download`: Download resource schemas
+
+### Templates
+
+- `GET /templates/{type_name}`: Get a template for a resource type
+
+## AWS CloudControl API
+
+The MCP server uses the AWS CloudControl API to manage AWS resources. The CloudControl API provides a unified API for creating, reading, updating, and deleting resources across AWS services.
+
+For more information, see the [AWS CloudControl API documentation](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/what-is-cloudcontrolapi.html).
 
 ## License
 
-MIT 
+This project is licensed under the MIT License - see the LICENSE file for details. 

@@ -321,7 +321,7 @@ async def process_natural_language_request(
     request: NaturalLanguageRequest,
     client: Any = Depends(get_cloudcontrol_client)
 ):
-    """Process a natural language request from an LLM to create AWS resources"""
+    """Process a natural language request from an LLM to manage AWS resources"""
     try:
         # Parse the natural language request
         parsed_request = LLMInterface.parse_request(request.text)
@@ -345,37 +345,140 @@ async def process_natural_language_request(
                 resource_config=resource_config
             )
         
-        # Execute the resource creation
+        # Execute the operation based on the operation type
+        operation = resource_config.get("operation", "CREATE")
+        
         try:
-            # Convert desired_state to JSON string
-            desired_state_json = json.dumps(resource_config["desired_state"])
+            if operation == "CREATE":
+                # Convert desired_state to JSON string
+                desired_state_json = json.dumps(resource_config["desired_state"])
+                
+                # Prepare parameters for CloudControl API
+                params = {
+                    "TypeName": resource_config["type_name"],
+                    "DesiredState": desired_state_json
+                }
+                
+                # Add role ARN if provided
+                if request.role_arn:
+                    params["RoleArn"] = request.role_arn
+                
+                # Generate client token
+                params["ClientToken"] = str(uuid.uuid4())
+                
+                # Call CloudControl API to create the resource
+                response = client.create_resource(**params)
+                
+                # Extract progress event from response
+                progress_event = response.get("ProgressEvent", {})
+                
+                result = {
+                    "request_token": progress_event.get("RequestToken", ""),
+                    "operation": progress_event.get("Operation", "CREATE"),
+                    "operation_status": progress_event.get("OperationStatus", ""),
+                    "type_name": progress_event.get("TypeName", resource_config["type_name"]),
+                    "identifier": progress_event.get("Identifier")
+                }
             
-            # Prepare parameters for CloudControl API
-            params = {
-                "TypeName": resource_config["type_name"],
-                "DesiredState": desired_state_json
-            }
+            elif operation == "GET":
+                # Get resource details
+                response = client.get_resource(
+                    TypeName=resource_config["type_name"],
+                    Identifier=resource_config["identifier"]
+                )
+                
+                # Parse properties JSON string to dictionary
+                properties = json.loads(response.get("ResourceDescription", {}).get("Properties", "{}"))
+                
+                result = {
+                    "operation": "GET",
+                    "type_name": resource_config["type_name"],
+                    "identifier": resource_config["identifier"],
+                    "properties": properties
+                }
             
-            # Add role ARN if provided
-            if request.role_arn:
-                params["RoleArn"] = request.role_arn
+            elif operation == "LIST":
+                # List resources
+                response = client.list_resources(TypeName=resource_config["type_name"])
+                
+                resources = []
+                for resource_desc in response.get("ResourceDescriptions", []):
+                    # Parse properties JSON string to dictionary
+                    properties = json.loads(resource_desc.get("Properties", "{}"))
+                    
+                    resources.append({
+                        "identifier": resource_desc.get("Identifier", ""),
+                        "properties": properties
+                    })
+                
+                result = {
+                    "operation": "LIST",
+                    "type_name": resource_config["type_name"],
+                    "resources": resources
+                }
             
-            # Generate client token
-            params["ClientToken"] = str(uuid.uuid4())
+            elif operation == "UPDATE":
+                # Convert patch document to JSON string
+                patch_document_json = json.dumps(resource_config["patch_document"])
+                
+                # Prepare parameters for CloudControl API
+                params = {
+                    "TypeName": resource_config["type_name"],
+                    "Identifier": resource_config["identifier"],
+                    "PatchDocument": patch_document_json
+                }
+                
+                # Add role ARN if provided
+                if request.role_arn:
+                    params["RoleArn"] = request.role_arn
+                
+                # Generate client token
+                params["ClientToken"] = str(uuid.uuid4())
+                
+                # Call CloudControl API to update the resource
+                response = client.update_resource(**params)
+                
+                # Extract progress event from response
+                progress_event = response.get("ProgressEvent", {})
+                
+                result = {
+                    "request_token": progress_event.get("RequestToken", ""),
+                    "operation": progress_event.get("Operation", "UPDATE"),
+                    "operation_status": progress_event.get("OperationStatus", ""),
+                    "type_name": progress_event.get("TypeName", resource_config["type_name"]),
+                    "identifier": progress_event.get("Identifier", resource_config["identifier"])
+                }
             
-            # Call CloudControl API to create the resource
-            response = client.create_resource(**params)
+            elif operation == "DELETE":
+                # Prepare parameters for CloudControl API
+                params = {
+                    "TypeName": resource_config["type_name"],
+                    "Identifier": resource_config["identifier"]
+                }
+                
+                # Add role ARN if provided
+                if request.role_arn:
+                    params["RoleArn"] = request.role_arn
+                
+                # Generate client token
+                params["ClientToken"] = str(uuid.uuid4())
+                
+                # Call CloudControl API to delete the resource
+                response = client.delete_resource(**params)
+                
+                # Extract progress event from response
+                progress_event = response.get("ProgressEvent", {})
+                
+                result = {
+                    "request_token": progress_event.get("RequestToken", ""),
+                    "operation": progress_event.get("Operation", "DELETE"),
+                    "operation_status": progress_event.get("OperationStatus", ""),
+                    "type_name": progress_event.get("TypeName", resource_config["type_name"]),
+                    "identifier": progress_event.get("Identifier", resource_config["identifier"])
+                }
             
-            # Extract progress event from response
-            progress_event = response.get("ProgressEvent", {})
-            
-            result = {
-                "request_token": progress_event.get("RequestToken", ""),
-                "operation": progress_event.get("Operation", "CREATE"),
-                "operation_status": progress_event.get("OperationStatus", ""),
-                "type_name": progress_event.get("TypeName", resource_config["type_name"]),
-                "identifier": progress_event.get("Identifier")
-            }
+            else:
+                raise ValueError(f"Unsupported operation: {operation}")
             
             # Generate response text
             response_text = LLMInterface.generate_response(resource_config, result)
@@ -387,11 +490,11 @@ async def process_natural_language_request(
             )
         
         except Exception as e:
-            # If resource creation fails, return the error
+            # If operation execution fails, return the error
             error_result = {
-                "operation": "CREATE",
+                "operation": operation,
                 "operation_status": "FAILED",
-                "type_name": resource_config["type_name"],
+                "type_name": resource_config.get("type_name", ""),
                 "error_code": "ExecutionError",
                 "status_message": str(e)
             }

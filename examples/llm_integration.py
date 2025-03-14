@@ -1,135 +1,160 @@
 #!/usr/bin/env python3
 """
-Example script that demonstrates how to integrate the MCP server with an LLM.
+Example script for LLM integration with the MCP server.
 
-This script shows how to:
-1. Process a user request with an LLM
-2. Generate a natural language request for the MCP server
-3. Send the request to the MCP server
-4. Process the response and provide feedback to the user
-
-Note: This example uses a simulated LLM for demonstration purposes.
-In a real-world scenario, you would use an actual LLM API like OpenAI, Anthropic, etc.
+This script demonstrates how to use the natural language interface
+to create, read, update, and delete AWS resources.
 """
 
 import requests
 import json
 import sys
+import time
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # MCP server URL
-MCP_SERVER_URL = "http://localhost:8000"
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
 
-class SimulatedLLM:
+def process_llm_request(text, execute=False):
     """
-    A simulated LLM for demonstration purposes.
-    
-    In a real-world scenario, you would use an actual LLM API like OpenAI, Anthropic, etc.
-    """
-    
-    def process_user_request(self, user_request):
-        """
-        Process a user request and generate a natural language request for the MCP server.
-        
-        Args:
-            user_request: The user's request
-            
-        Returns:
-            A natural language request for the MCP server
-        """
-        # In a real-world scenario, you would send the user request to an LLM API
-        # and get back a response. Here, we'll just simulate it with some basic logic.
-        
-        if "s3" in user_request.lower() and "bucket" in user_request.lower():
-            # Extract bucket name from the request
-            import re
-            bucket_name_match = re.search(r'(?:bucket|name)[:\s]+["\']([\w.-]+)["\']', user_request)
-            bucket_name = bucket_name_match.group(1) if bucket_name_match else "example-bucket"
-            
-            # Generate a natural language request for the MCP server
-            return f"Create an S3 bucket with name '{bucket_name}' and versioning enabled, public access blocked, and encryption enabled"
-        
-        elif "dynamodb" in user_request.lower() and "table" in user_request.lower():
-            # Extract table name from the request
-            import re
-            table_name_match = re.search(r'(?:table|name)[:\s]+["\']([\w.-]+)["\']', user_request)
-            table_name = table_name_match.group(1) if table_name_match else "example-table"
-            
-            # Generate a natural language request for the MCP server
-            return f"Create a DynamoDB table with name '{table_name}', partition key 'id', and read capacity 5"
-        
-        else:
-            return "I'm not sure what resource you want to create. Please specify the resource type and name."
-    
-    def generate_user_response(self, mcp_response):
-        """
-        Generate a response to the user based on the MCP server response.
-        
-        Args:
-            mcp_response: The response from the MCP server
-            
-        Returns:
-            A response to the user
-        """
-        # In a real-world scenario, you would send the MCP response to an LLM API
-        # and get back a user-friendly response. Here, we'll just return the MCP response.
-        
-        return mcp_response["response"]
-
-def send_to_mcp_server(natural_language_request, execute=False):
-    """
-    Send a natural language request to the MCP server.
+    Process a natural language request from an LLM.
     
     Args:
-        natural_language_request: The natural language request
+        text: The natural language request text
         execute: Whether to execute the request or just preview it
-        
+    
     Returns:
-        The response from the MCP server
+        The response from the server
     """
-    # Prepare the request
-    request_data = {
-        "text": natural_language_request,
+    # Prepare the request payload
+    payload = {
+        "text": text,
         "execute": execute
     }
     
     # Send the request
-    response = requests.post(f"{MCP_SERVER_URL}/llm/resources", json=request_data)
+    print(f"Sending request: {text}")
+    response = requests.post(
+        f"{MCP_SERVER_URL}/llm/resources",
+        json=payload
+    )
     
     # Check if the request was successful
     if response.status_code != 200:
-        print(f"Error: {response.status_code} - {response.text}")
-        sys.exit(1)
+        print(f"Error processing request: {response.text}")
+        return None
     
-    return response.json()
+    # Get the response data
+    response_data = response.json()
+    
+    return response_data
+
+def check_resource_status(request_token):
+    """
+    Check the status of a resource request.
+    
+    Args:
+        request_token: The request token
+    
+    Returns:
+        The status response
+    """
+    # Send the request
+    response = requests.get(
+        f"{MCP_SERVER_URL}/resources/status/{request_token}"
+    )
+    
+    # Check if the request was successful
+    if response.status_code != 200:
+        print(f"Error getting status: {response.text}")
+        return None
+    
+    # Get the response data
+    status_data = response.json()
+    
+    return status_data
+
+def wait_for_operation_completion(request_token):
+    """
+    Wait for an operation to complete.
+    
+    Args:
+        request_token: The request token
+    
+    Returns:
+        The final status
+    """
+    max_attempts = 10
+    attempt = 0
+    
+    while attempt < max_attempts:
+        attempt += 1
+        
+        # Wait before checking status
+        time.sleep(5)
+        
+        # Get the status
+        status_data = check_resource_status(request_token)
+        
+        if not status_data:
+            print("Failed to get status. Retrying...")
+            continue
+        
+        operation_status = status_data.get("operation_status")
+        print(f"Status: {operation_status}")
+        
+        # Check if the operation is complete
+        if operation_status in ["SUCCESS", "FAILED"]:
+            return status_data
+        
+        # If still in progress, continue polling
+        print("Operation in progress. Waiting...")
+    
+    print("Timed out waiting for operation to complete.")
+    return None
 
 def main():
     """Main function."""
     if len(sys.argv) < 2:
-        print("Usage: python llm_integration.py \"<user request>\" [--execute]")
+        print("Usage: python llm_integration.py <request_text> [--execute]")
         sys.exit(1)
     
-    user_request = sys.argv[1]
+    # Get the request text and execute flag
+    request_text = sys.argv[1]
     execute = "--execute" in sys.argv
     
-    # Step 1: Process the user request with the LLM
-    llm = SimulatedLLM()
-    natural_language_request = llm.process_user_request(user_request)
+    # Process the request
+    response = process_llm_request(request_text, execute)
     
-    print(f"User request: {user_request}")
-    print(f"LLM generated request: {natural_language_request}")
+    if not response:
+        print("Failed to process request.")
+        sys.exit(1)
     
-    # Step 2: Send the natural language request to the MCP server
-    print("\nSending request to MCP server...")
-    mcp_response = send_to_mcp_server(natural_language_request, execute)
+    # Print the response
+    print("\nResponse from MCP server:")
+    print(response["response"])
     
-    # Step 3: Generate a response to the user
-    user_response = llm.generate_user_response(mcp_response)
-    
-    print("\nResponse to user:")
-    print(user_response)
-    
+    # If not executing, exit
     if not execute:
-        print("\nThis was just a preview. Run with --execute to actually create the resource.")
+        print("\nThis was just a preview. Run with --execute to actually perform the operation.")
+        sys.exit(0)
+    
+    # If there's a result with a request token, wait for completion
+    if response.get("result") and response["result"].get("request_token"):
+        request_token = response["result"]["request_token"]
+        
+        print(f"\nWaiting for operation to complete (request token: {request_token})...")
+        final_status = wait_for_operation_completion(request_token)
+        
+        if final_status:
+            print("\nFinal status:")
+            print(json.dumps(final_status, indent=2))
+    
+    print("\nOperation completed.")
 
 if __name__ == "__main__":
     main() 

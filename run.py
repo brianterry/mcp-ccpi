@@ -4,7 +4,21 @@ Script to run the MCP server.
 """
 
 import uvicorn
-from app.main import app
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True) 
+    # Get port from environment variable or use default
+    port = int(os.getenv("PORT", "8000"))
+    
+    # Run the server
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=True,
+        log_level="info"
+    ) 

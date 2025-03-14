@@ -1,140 +1,132 @@
 #!/usr/bin/env python3
 """
-Example script that demonstrates how to use the MCP server to create an S3 bucket.
-
-This script shows how to:
-1. Send a natural language request to create an S3 bucket
-2. Check the status of the resource creation request
-3. Get details of the created resource
+Example script for creating an S3 bucket using the MCP server.
 """
 
 import requests
 import json
-import time
 import sys
+import time
+import uuid
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # MCP server URL
-MCP_SERVER_URL = "http://localhost:8000"
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
 
-def create_s3_bucket(bucket_name, execute=False):
+def create_s3_bucket(bucket_name=None):
     """
-    Send a natural language request to create an S3 bucket.
+    Create an S3 bucket using the MCP server.
     
     Args:
-        bucket_name: The name of the S3 bucket to create
-        execute: Whether to execute the request or just preview it
-        
+        bucket_name: Name of the bucket to create (optional, will generate a name if not provided)
+    
     Returns:
-        The response from the MCP server
+        The response from the server
     """
-    # Prepare the request
-    request_data = {
-        "text": f"Create an S3 bucket with name '{bucket_name}' and versioning enabled, public access blocked, and encryption enabled",
-        "execute": execute
+    if not bucket_name:
+        # Generate a unique bucket name
+        bucket_name = f"mcp-example-{uuid.uuid4().hex[:8]}"
+    
+    # Prepare the request payload
+    payload = {
+        "type_name": "AWS::S3::Bucket",
+        "desired_state": {
+            "BucketName": bucket_name,
+            "AccessControl": "Private",
+            "VersioningConfiguration": {
+                "Status": "Enabled"
+            },
+            "Tags": [
+                {
+                    "Key": "CreatedBy",
+                    "Value": "MCP-Example"
+                },
+                {
+                    "Key": "Environment",
+                    "Value": "Development"
+                }
+            ]
+        }
     }
     
-    # Send the request
-    response = requests.post(f"{MCP_SERVER_URL}/llm/resources", json=request_data)
+    # Send the request to create the bucket
+    print(f"Creating S3 bucket: {bucket_name}")
+    response = requests.post(
+        f"{MCP_SERVER_URL}/resources",
+        json=payload
+    )
     
     # Check if the request was successful
     if response.status_code != 200:
-        print(f"Error: {response.status_code} - {response.text}")
-        sys.exit(1)
+        print(f"Error creating bucket: {response.text}")
+        return None
     
-    return response.json()
-
-def check_resource_status(request_token):
-    """
-    Check the status of a resource creation request.
+    # Get the response data
+    response_data = response.json()
+    request_token = response_data.get("request_token")
     
-    Args:
-        request_token: The token of the resource creation request
-        
-    Returns:
-        The response from the MCP server
-    """
-    # Send the request
-    response = requests.get(f"{MCP_SERVER_URL}/resources/status/{request_token}")
+    print(f"Request submitted. Request token: {request_token}")
     
-    # Check if the request was successful
-    if response.status_code != 200:
-        print(f"Error: {response.status_code} - {response.text}")
-        sys.exit(1)
-    
-    return response.json()
-
-def get_resource_details(type_name, identifier):
-    """
-    Get details of a resource.
-    
-    Args:
-        type_name: The type name of the resource
-        identifier: The identifier of the resource
-        
-    Returns:
-        The response from the MCP server
-    """
-    # Send the request
-    response = requests.get(f"{MCP_SERVER_URL}/resources/{type_name}/{identifier}")
-    
-    # Check if the request was successful
-    if response.status_code != 200:
-        print(f"Error: {response.status_code} - {response.text}")
-        sys.exit(1)
-    
-    return response.json()
-
-def main():
-    """Main function."""
-    if len(sys.argv) < 2:
-        print("Usage: python create_s3_bucket.py <bucket_name> [--execute]")
-        sys.exit(1)
-    
-    bucket_name = sys.argv[1]
-    execute = "--execute" in sys.argv
-    
-    # Step 1: Send a natural language request to create an S3 bucket
-    print(f"Sending request to create S3 bucket '{bucket_name}'...")
-    response = create_s3_bucket(bucket_name, execute)
-    
-    print("\nResponse from MCP server:")
-    print(response["response"])
-    
-    if not execute:
-        print("\nThis was just a preview. Run with --execute to actually create the bucket.")
-        sys.exit(0)
-    
-    # Step 2: Check the status of the resource creation request
-    request_token = response["result"]["request_token"]
-    print(f"\nChecking status of request {request_token}...")
-    
+    # Poll for the status of the request
     max_attempts = 10
     attempt = 0
     
     while attempt < max_attempts:
         attempt += 1
-        status_response = check_resource_status(request_token)
         
-        print(f"\nStatus: {status_response['operation_status']}")
-        
-        if status_response["operation_status"] in ["SUCCESS", "FAILED"]:
-            break
-        
-        print("Waiting for resource creation to complete...")
+        # Wait before checking status
         time.sleep(5)
+        
+        # Get the status of the request
+        status_response = requests.get(
+            f"{MCP_SERVER_URL}/resources/status/{request_token}"
+        )
+        
+        if status_response.status_code != 200:
+            print(f"Error getting status: {status_response.text}")
+            continue
+        
+        status_data = status_response.json()
+        operation_status = status_data.get("operation_status")
+        
+        print(f"Status: {operation_status}")
+        
+        # Check if the operation is complete
+        if operation_status == "SUCCESS":
+            identifier = status_data.get("identifier")
+            print(f"Bucket created successfully. Identifier: {identifier}")
+            return status_data
+        
+        elif operation_status == "FAILED":
+            error_code = status_data.get("error_code")
+            status_message = status_data.get("status_message")
+            print(f"Operation failed. Error: {error_code} - {status_message}")
+            return status_data
+        
+        # If still in progress, continue polling
+        print("Operation in progress. Waiting...")
     
-    if status_response["operation_status"] == "FAILED":
-        print(f"Resource creation failed: {status_response.get('status_message', 'Unknown error')}")
-        sys.exit(1)
+    print("Timed out waiting for operation to complete.")
+    return None
+
+def main():
+    """Main function."""
+    # Get bucket name from command line argument if provided
+    bucket_name = sys.argv[1] if len(sys.argv) > 1 else None
     
-    # Step 3: Get details of the created resource
-    print(f"\nGetting details of bucket '{bucket_name}'...")
-    resource_details = get_resource_details("AWS::S3::Bucket", bucket_name)
+    # Create the bucket
+    result = create_s3_bucket(bucket_name)
     
-    print("\nResource details:")
-    print(json.dumps(resource_details, indent=2))
-    
-    print(f"\nS3 bucket '{bucket_name}' created successfully!")
+    # Print the result
+    if result:
+        print("\nFinal result:")
+        print(json.dumps(result, indent=2))
+    else:
+        print("\nFailed to create bucket.")
 
 if __name__ == "__main__":
     main() 
