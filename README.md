@@ -10,6 +10,7 @@ The MCP server provides a RESTful API that allows LLMs to:
 2. Process natural language requests to manage cloud resources
 3. Access resource schemas and templates
 4. Validate resource configurations against schemas
+5. Validate resources against policy rules using CloudFormation Guard
 
 ## Architecture
 
@@ -89,6 +90,7 @@ The following diagram illustrates how an LLM interacts with the MCP server to ma
 - **Schema Management**: Downloads, validates, and uses AWS CloudFormation resource schemas
 - **Resource Templates**: Generates templates for resource creation
 - **Resource Validation**: Validates resource configurations against schemas
+- **Policy Validation**: Validates resources against policy rules using CloudFormation Guard
 
 ## Project Structure
 
@@ -98,13 +100,16 @@ The following diagram illustrates how an LLM interacts with the MCP server to ma
 │   ├── __init__.py
 │   ├── main.py                # Main FastAPI application
 │   ├── llm_interface.py       # Natural language interface for LLMs
-│   └── schema_manager.py      # Schema management functionality
+│   ├── schema_manager.py      # Schema management functionality
+│   └── guard_validator.py     # CloudFormation Guard validation
 ├── examples/
 │   ├── create_s3_bucket.py    # Example script for creating an S3 bucket
 │   ├── llm_integration.py     # Example script for LLM integration
 │   ├── simple_workflow.py     # Example of a complete workflow
 │   ├── natural_language_demo.py # Demo of natural language interface
-│   └── schema_management.py   # Example of working with resource schemas
+│   ├── schema_management.py   # Example of working with resource schemas
+│   └── policy_validation.py   # Example of policy validation
+├── rules/                     # Directory for storing CloudFormation Guard rules
 ├── schemas/                   # Directory for storing resource schemas
 ├── tests/
 │   ├── __init__.py
@@ -212,6 +217,27 @@ python examples/schema_management.py --include-optional
 
 # Create a resource from the template
 python examples/schema_management.py --create --name my-schema-bucket
+```
+
+### 5. Validate Resources Against Policy Rules
+
+The policy validation example demonstrates how to validate resources against policy rules using CloudFormation Guard:
+
+```bash
+# Generate example rules and run the full example
+python examples/policy_validation.py
+
+# Create a custom rule
+python examples/policy_validation.py --create-rule
+
+# Create and validate a compliant resource
+python examples/policy_validation.py --compliant
+
+# Create and validate a non-compliant resource
+python examples/policy_validation.py --non-compliant
+
+# Validate a resource using natural language
+python examples/policy_validation.py --natural-language "Validate an S3 bucket with versioning enabled but no encryption"
 ```
 
 ## Working with CloudFormation Resource Schemas
@@ -340,6 +366,315 @@ create_response = requests.post(
 print(json.dumps(create_response.json(), indent=2))
 ```
 
+## Policy Validation with CloudFormation Guard
+
+The MCP server uses AWS CloudFormation Guard to validate resource configurations against policy rules. CloudFormation Guard is a policy-as-code evaluation tool that allows you to define and enforce policies for AWS resources.
+
+### Managing Policy Rules
+
+The MCP server provides endpoints to manage CloudFormation Guard rules:
+
+#### 1. Generate Example Rules
+
+Generate example rules for common resource types:
+
+```bash
+curl -X POST "http://localhost:8000/rules/generate-examples"
+```
+
+Or using Python:
+
+```python
+import requests
+requests.post("http://localhost:8000/rules/generate-examples")
+```
+
+#### 2. List Available Rules
+
+List all available rules:
+
+```bash
+curl -X GET "http://localhost:8000/rules"
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.get("http://localhost:8000/rules")
+rules = response.json()["rules"]
+print(rules)
+```
+
+#### 3. Get a Rule
+
+Get the content of a specific rule:
+
+```bash
+curl -X GET "http://localhost:8000/rules/s3_bucket_encryption.guard"
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.get("http://localhost:8000/rules/s3_bucket_encryption.guard")
+rule_content = response.json()["rule_content"]
+print(rule_content)
+```
+
+#### 4. Create or Update a Rule
+
+Create or update a rule:
+
+```bash
+curl -X POST "http://localhost:8000/rules" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rule_name": "s3_bucket_logging.guard",
+    "rule_content": "rule s3_bucket_logging_enabled { AWS::S3::Bucket { LoggingConfiguration exists } }"
+  }'
+```
+
+Or using Python:
+
+```python
+import requests
+requests.post(
+    "http://localhost:8000/rules",
+    json={
+        "rule_name": "s3_bucket_logging.guard",
+        "rule_content": "rule s3_bucket_logging_enabled { AWS::S3::Bucket { LoggingConfiguration exists } }"
+    }
+)
+```
+
+#### 5. Delete a Rule
+
+Delete a rule:
+
+```bash
+curl -X DELETE "http://localhost:8000/rules/s3_bucket_logging.guard"
+```
+
+Or using Python:
+
+```python
+import requests
+requests.delete("http://localhost:8000/rules/s3_bucket_logging.guard")
+```
+
+### Validating Resources Against Policy Rules
+
+The MCP server provides endpoints to validate resource configurations against policy rules:
+
+#### 1. Validate a Resource Configuration
+
+Validate a resource configuration against all available rules:
+
+```bash
+curl -X POST "http://localhost:8000/validate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type_name": "AWS::S3::Bucket",
+    "resource_config": {
+      "BucketName": "my-bucket",
+      "VersioningConfiguration": {
+        "Status": "Enabled"
+      }
+    }
+  }'
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.post(
+    "http://localhost:8000/validate",
+    json={
+        "type_name": "AWS::S3::Bucket",
+        "resource_config": {
+            "BucketName": "my-bucket",
+            "VersioningConfiguration": {
+                "Status": "Enabled"
+            }
+        }
+    }
+)
+result = response.json()
+print(f"Valid: {result['valid']}")
+print(f"Results: {result['results']}")
+```
+
+#### 2. Validate Against Specific Rules
+
+Validate a resource configuration against specific rules:
+
+```bash
+curl -X POST "http://localhost:8000/validate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type_name": "AWS::S3::Bucket",
+    "resource_config": {
+      "BucketName": "my-bucket",
+      "VersioningConfiguration": {
+        "Status": "Enabled"
+      }
+    },
+    "rule_names": ["s3_bucket_encryption.guard"]
+  }'
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.post(
+    "http://localhost:8000/validate",
+    json={
+        "type_name": "AWS::S3::Bucket",
+        "resource_config": {
+            "BucketName": "my-bucket",
+            "VersioningConfiguration": {
+                "Status": "Enabled"
+            }
+        },
+        "rule_names": ["s3_bucket_encryption.guard"]
+    }
+)
+result = response.json()
+print(f"Valid: {result['valid']}")
+print(f"Results: {result['results']}")
+```
+
+#### 3. Validate Using Natural Language
+
+Validate a resource using natural language:
+
+```bash
+curl -X POST "http://localhost:8000/llm/validate" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Validate an S3 bucket with versioning enabled but no encryption"
+  }'
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.post(
+    "http://localhost:8000/llm/validate",
+    json={
+        "text": "Validate an S3 bucket with versioning enabled but no encryption"
+    }
+)
+result = response.json()
+print(result["response"])
+```
+
+#### 4. Validate During Resource Creation
+
+Validate a resource against policy rules during creation:
+
+```bash
+curl -X POST "http://localhost:8000/resources?validate_policy=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type_name": "AWS::S3::Bucket",
+    "desired_state": {
+      "BucketName": "my-bucket",
+      "VersioningConfiguration": {
+        "Status": "Enabled"
+      }
+    }
+  }'
+```
+
+Or using Python:
+
+```python
+import requests
+response = requests.post(
+    "http://localhost:8000/resources",
+    params={"validate_policy": True},
+    json={
+        "type_name": "AWS::S3::Bucket",
+        "desired_state": {
+            "BucketName": "my-bucket",
+            "VersioningConfiguration": {
+                "Status": "Enabled"
+            }
+        }
+    }
+)
+```
+
+### Example: Creating a Compliant Resource
+
+Here's an example of creating a resource that complies with policy rules:
+
+```python
+import requests
+import json
+
+# Get a template for an S3 bucket
+response = requests.get("http://localhost:8000/templates/AWS::S3::Bucket")
+template = response.json()["template"]
+
+# Make the resource compliant with policy rules
+template["BucketName"] = "my-compliant-bucket"
+
+# Add encryption
+template["BucketEncryption"] = {
+    "ServerSideEncryptionConfiguration": [
+        {
+            "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+            }
+        }
+    ]
+}
+
+# Add versioning
+template["VersioningConfiguration"] = {
+    "Status": "Enabled"
+}
+
+# Add public access block
+template["PublicAccessBlockConfiguration"] = {
+    "BlockPublicAcls": True,
+    "BlockPublicPolicy": True,
+    "IgnorePublicAcls": True,
+    "RestrictPublicBuckets": True
+}
+
+# Validate the resource against policy rules
+validate_response = requests.post(
+    "http://localhost:8000/validate",
+    json={
+        "type_name": "AWS::S3::Bucket",
+        "resource_config": template
+    }
+)
+
+validation_result = validate_response.json()
+if validation_result["valid"]:
+    # Create the resource
+    create_response = requests.post(
+        "http://localhost:8000/resources",
+        json={
+            "type_name": "AWS::S3::Bucket",
+            "desired_state": template
+        }
+    )
+    print(json.dumps(create_response.json(), indent=2))
+else:
+    print("Resource does not comply with policy rules:")
+    print(json.dumps(validation_result, indent=2))
+```
+
 ## API Endpoints
 
 ### Resources
@@ -354,6 +689,7 @@ print(json.dumps(create_response.json(), indent=2))
 ### LLM Interface
 
 - `POST /llm/resources`: Process a natural language request from an LLM
+- `POST /llm/validate`: Process a natural language validation request from an LLM
 
 ### Schemas
 
@@ -365,11 +701,29 @@ print(json.dumps(create_response.json(), indent=2))
 
 - `GET /templates/{type_name}`: Get a template for a resource type
 
+### Rules
+
+- `GET /rules`: List available rules
+- `GET /rules/{rule_name}`: Get the content of a rule
+- `POST /rules`: Create or update a rule
+- `DELETE /rules/{rule_name}`: Delete a rule
+- `POST /rules/generate-examples`: Generate example rules
+
+### Validation
+
+- `POST /validate`: Validate a resource configuration against policy rules
+
 ## AWS CloudControl API
 
 The MCP server uses the AWS CloudControl API to manage AWS resources. The CloudControl API provides a unified API for creating, reading, updating, and deleting resources across AWS services.
 
 For more information, see the [AWS CloudControl API documentation](https://docs.aws.amazon.com/cloudcontrolapi/latest/userguide/what-is-cloudcontrolapi.html).
+
+## AWS CloudFormation Guard
+
+The MCP server uses AWS CloudFormation Guard to validate resource configurations against policy rules. CloudFormation Guard is a policy-as-code evaluation tool that allows you to define and enforce policies for AWS resources.
+
+For more information, see the [AWS CloudFormation Guard documentation](https://github.com/aws-cloudformation/cloudformation-guard).
 
 ## License
 

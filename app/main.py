@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from .llm_interface import LLMInterface
 from .schema_manager import SchemaManager
+from .guard_validator import GuardValidator
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +32,9 @@ app.add_middleware(
 
 # Initialize schema manager
 schema_manager = SchemaManager()
+
+# Initialize guard validator
+guard_validator = GuardValidator()
 
 # Pydantic models for request/response validation
 class ResourceRequest(BaseModel):
@@ -97,6 +101,32 @@ class ResourceTemplateResponse(BaseModel):
     type_name: str = Field(..., description="The resource type name")
     template: Dict[str, Any] = Field(..., description="The resource template")
 
+# New models for CloudFormation Guard validation
+class ValidationRequest(BaseModel):
+    type_name: str = Field(..., description="The name of the resource type (e.g., AWS::S3::Bucket)")
+    resource_config: Dict[str, Any] = Field(..., description="The resource configuration to validate")
+    rule_names: Optional[List[str]] = Field(None, description="List of rule names to validate against (optional)")
+
+class ValidationResponse(BaseModel):
+    valid: bool = Field(..., description="Whether the resource configuration is valid")
+    results: List[Dict[str, Any]] = Field(..., description="Validation results for each rule")
+
+class RuleRequest(BaseModel):
+    rule_name: str = Field(..., description="The name of the rule file")
+    rule_content: str = Field(..., description="The content of the rule file")
+
+class RuleResponse(BaseModel):
+    rule_name: str = Field(..., description="The name of the rule file")
+    success: bool = Field(..., description="Whether the operation was successful")
+    message: Optional[str] = Field(None, description="Additional information about the operation")
+
+class RuleListResponse(BaseModel):
+    rules: List[str] = Field(..., description="List of available rule files")
+
+class RuleContentResponse(BaseModel):
+    rule_name: str = Field(..., description="The name of the rule file")
+    rule_content: Optional[str] = Field(None, description="The content of the rule file")
+
 # Dependency to get CloudControl client
 def get_cloudcontrol_client():
     return boto3.client('cloudcontrol', 
@@ -110,7 +140,8 @@ async def root():
 @app.post("/resources", response_model=ResourceResponse, tags=["Resources"])
 async def create_resource(
     request: ResourceRequest,
-    client: Any = Depends(get_cloudcontrol_client)
+    client: Any = Depends(get_cloudcontrol_client),
+    validate_policy: bool = Query(False, description="Whether to validate the resource against policy rules")
 ):
     """Create a new AWS resource using CloudControl API"""
     try:
@@ -121,6 +152,39 @@ async def create_resource(
                 status_code=400, 
                 detail=f"Invalid resource configuration: {'; '.join(validation_result.get('errors', []))}"
             )
+        
+        # Validate against policy rules if requested
+        if validate_policy:
+            is_valid, validation_results = guard_validator.validate_resource(
+                request.type_name,
+                request.desired_state
+            )
+            
+            if not is_valid:
+                # Format the validation errors
+                error_messages = []
+                for result in validation_results:
+                    if not result.get("valid", True):
+                        rule_file = result.get("rule_file", "unknown")
+                        details = result.get("details", [])
+                        
+                        for detail in details:
+                            if detail.get("status") != "PASS":
+                                rule_name = detail.get("rule_name", "unknown")
+                                message = detail.get("message", "No message provided")
+                                error_messages.append(f"Rule '{rule_name}' in '{rule_file}': {message}")
+                
+                if not error_messages:
+                    error_messages.append("Resource configuration does not comply with policy rules")
+                
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Resource configuration does not comply with policy rules",
+                        "validation_results": validation_results,
+                        "errors": error_messages
+                    }
+                )
         
         # Convert desired_state to JSON string
         desired_state_json = json.dumps(request.desired_state)
@@ -578,6 +642,157 @@ async def download_schemas(
         else:
             schema_manager.download_all_schemas()
             return {"message": "All schemas downloaded successfully"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/validate", response_model=ValidationResponse, tags=["Validation"])
+async def validate_resource_config(request: ValidationRequest):
+    """
+    Validate a resource configuration against CloudFormation Guard rules.
+    
+    This endpoint validates a resource configuration against policy rules
+    defined using AWS CloudFormation Guard syntax.
+    """
+    try:
+        is_valid, validation_results = guard_validator.validate_resource(
+            request.type_name,
+            request.resource_config,
+            request.rule_names
+        )
+        
+        return ValidationResponse(
+            valid=is_valid,
+            results=validation_results
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/llm/validate", tags=["LLM Interface"])
+async def llm_validate_resource(request: NaturalLanguageRequest):
+    """
+    Process a natural language request from an LLM to validate a resource configuration.
+    
+    This endpoint allows LLMs to validate resource configurations against policy rules
+    using natural language.
+    """
+    try:
+        llm_interface = LLMInterface(schema_manager, guard_validator)
+        
+        # Process the natural language request
+        operation, resource_type, resource_config = llm_interface.process_validation_request(request.text)
+        
+        if not resource_config:
+            return {
+                "response": "I couldn't understand the resource configuration from your request. "
+                           "Please provide a clearer description of the resource you want to validate."
+            }
+        
+        # Validate the resource configuration
+        is_valid, validation_results = guard_validator.validate_resource(
+            resource_type,
+            resource_config
+        )
+        
+        # Generate a natural language response
+        response = llm_interface.generate_validation_response(
+            is_valid,
+            validation_results,
+            resource_type,
+            resource_config
+        )
+        
+        return {
+            "response": response,
+            "resource_config": resource_config,
+            "validation_results": {
+                "valid": is_valid,
+                "results": validation_results
+            }
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Rule management endpoints
+@app.get("/rules", response_model=RuleListResponse, tags=["Rules"])
+async def list_rules():
+    """List all available CloudFormation Guard rule files."""
+    try:
+        rules = guard_validator.list_rules()
+        return RuleListResponse(rules=rules)
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/rules/{rule_name}", response_model=RuleContentResponse, tags=["Rules"])
+async def get_rule(rule_name: str):
+    """Get the content of a CloudFormation Guard rule file."""
+    try:
+        rule_content = guard_validator.get_rule_content(rule_name)
+        
+        if rule_content is None:
+            raise HTTPException(status_code=404, detail=f"Rule '{rule_name}' not found")
+        
+        return RuleContentResponse(
+            rule_name=rule_name,
+            rule_content=rule_content
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/rules", response_model=RuleResponse, tags=["Rules"])
+async def save_rule(request: RuleRequest):
+    """Save a CloudFormation Guard rule file."""
+    try:
+        success = guard_validator.save_rule(request.rule_name, request.rule_content)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to save rule '{request.rule_name}'")
+        
+        return RuleResponse(
+            rule_name=request.rule_name,
+            success=True,
+            message=f"Rule '{request.rule_name}' saved successfully"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/rules/{rule_name}", response_model=RuleResponse, tags=["Rules"])
+async def delete_rule(rule_name: str):
+    """Delete a CloudFormation Guard rule file."""
+    try:
+        success = guard_validator.delete_rule(rule_name)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Rule '{rule_name}' not found or could not be deleted")
+        
+        return RuleResponse(
+            rule_name=rule_name,
+            success=True,
+            message=f"Rule '{rule_name}' deleted successfully"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/rules/generate-examples", response_model=RuleListResponse, tags=["Rules"])
+async def generate_example_rules():
+    """Generate example CloudFormation Guard rule files."""
+    try:
+        guard_validator.generate_example_rules()
+        rules = guard_validator.list_rules()
+        
+        return RuleListResponse(rules=rules)
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

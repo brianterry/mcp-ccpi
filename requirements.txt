@@ -5,4 +5,5 @@ python-dotenv==1.0.0
 requests==2.31.0
 jsonschema==4.19.1
 pydantic==2.4.2
-python-multipart==0.0.6 
+python-multipart==0.0.6
+cfn-guard-rs-python==1.0.0 
